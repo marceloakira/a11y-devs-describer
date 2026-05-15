@@ -12,16 +12,18 @@ METADATA:
 
 Return ONLY valid JSON with these fields:
 - "pipeline": "simple" | "detailed" | "full_accessibility"
-- "steps": list of strings from ["image_description", "text_extraction", "translation", "summarize", "table_extraction"]
+- "steps": list of strings from ["image_description", "text_extraction", "ocr_revision", "translation", "summarize", "table_extraction"]
 - "detail_level": "baixo" | "medio" | "alto"
 - "priority": "speed" | "quality"
 
 Rules:
-- PDF without embedded text ALWAYS needs "image_description"
+- PDF without embedded text ALWAYS needs "text_extraction"
 - Simple single images use pipeline "simple"
 - Complex PDFs with many images use pipeline "detailed"
 - Translation is ALWAYS needed (output is pt-br)
-- Summarize only when pages > 10 or text_length > 5000 chars"""
+- Summarize only when pages > 10 or text_length > 5000 chars
+- "ocr_revision" is recommended when text_extraction is present (fixes OCR errors)
+- "image_description" is optional and adds visual description (slower)"""
 
 
 class RouterIA(BaseAgent):
@@ -72,13 +74,13 @@ class RouterIA(BaseAgent):
         except json.JSONDecodeError:
             plan = {
                 "pipeline": "simple",
-                "steps": ["image_description", "translation"],
+                "steps": ["text_extraction", "ocr_revision", "translation"],
                 "detail_level": "medio",
                 "priority": "speed",
             }
         if "steps" not in plan or "pipeline" not in plan:
             plan["pipeline"] = "simple"
-            plan["steps"] = ["image_description", "translation"]
+            plan["steps"] = ["text_extraction", "ocr_revision", "translation"]
         if "translation" not in plan.get("steps", []):
             plan.setdefault("steps", []).append("translation")
         return plan

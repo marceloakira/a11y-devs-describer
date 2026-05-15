@@ -3,8 +3,9 @@ from pathlib import Path
 
 import pytesseract
 from bot.utils.logger import logger
+from config.settings import settings
 
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+pytesseract.pytesseract.tesseract_cmd = settings.tesseract_cmd
 
 
 class OCRAgent:
@@ -19,6 +20,24 @@ class OCRAgent:
             return await self._ocr_imagem(file_path)
         except Exception as e:
             logger.error("Erro no OCR para {}: {}: {}", file_path.name, type(e).__name__, e)
+            return ""
+
+    async def extrair_bytes(self, img_bytes: bytes) -> str:
+        from PIL import Image
+        import io
+
+        try:
+            loop = asyncio.get_running_loop()
+
+            def _sync_ocr():
+                img = Image.open(io.BytesIO(img_bytes))
+                return pytesseract.image_to_string(img, lang=self.lang).strip()
+
+            text = await loop.run_in_executor(None, _sync_ocr)
+            logger.info("OCR bytes: {} caracteres extraidos", len(text))
+            return text
+        except Exception as e:
+            logger.error("Erro no OCR bytes: {}", e)
             return ""
 
     async def _ocr_imagem(self, file_path: Path) -> str:
@@ -43,8 +62,6 @@ class OCRAgent:
         doc = fitz.open(file_path)
         try:
             total = len(doc)
-            from config.settings import settings
-
             pages_to_process = min(total, settings.max_pages)
             texts = []
             loop = asyncio.get_running_loop()

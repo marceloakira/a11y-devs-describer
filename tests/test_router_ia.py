@@ -24,7 +24,8 @@ def test_parse_plan_invalid_json_fallback():
     router = RouterIA()
     plan = router._parse_plan("not json at all")
     assert plan["pipeline"] == "simple"
-    assert "image_description" in plan["steps"]
+    assert "text_extraction" in plan["steps"]
+    assert "ocr_revision" in plan["steps"]
     assert "translation" in plan["steps"]
 
 

@@ -9,20 +9,15 @@ def aplicar_politicas(plan: dict, metadata: dict) -> dict:
     steps_to_add = []
     tipo = metadata.get("tipo")
 
-    if tipo == "pdf":
-        texto_embutido = metadata.get("texto_embutido", False)
-        if not texto_embutido and "image_description" not in steps:
-            steps_to_add.append("image_description")
-            if detail == "baixo":
-                detail = "medio"
-
-    if tipo == "imagem":
-        if "image_description" not in steps:
-            steps_to_add.append("image_description")
+    has_text_extraction = "text_extraction" in steps
 
     if tipo in ("pdf", "imagem"):
-        if "text_extraction" not in steps:
+        if not has_text_extraction:
             steps_to_add.append("text_extraction")
+            has_text_extraction = True
+
+    if has_text_extraction and "ocr_revision" not in steps:
+        steps_to_add.append("ocr_revision")
 
     if "translation" not in steps:
         steps_to_add.append("translation")

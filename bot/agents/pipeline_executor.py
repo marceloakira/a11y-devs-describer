@@ -1,9 +1,10 @@
 import asyncio
-import base64
 from pathlib import Path
 from typing import Callable, Coroutine
 
 from bot.agents.descritor_visual import DescritorVisual
+from bot.agents.ocr_agent import OCRAgent
+from bot.agents.revisor_ocr import RevisorOCR
 from bot.agents.summarizer import Summarizer
 from bot.agents.tradutor import Tradutor
 from bot.agents.state_manager import state_manager
@@ -17,6 +18,8 @@ class PipelineExecutor:
         self.descritor = DescritorVisual()
         self.tradutor = Tradutor()
         self.summarizer = Summarizer()
+        self.ocr_agent = OCRAgent()
+        self.revisor = RevisorOCR()
 
     async def executar(
         self,
@@ -90,15 +93,30 @@ class PipelineExecutor:
             try:
                 if is_pdf:
                     texto_extraido = await asyncio.wait_for(
-                        self._extrair_texto_pdf(file_path, status_callback, task_id), timeout=3600
+                        self._extrair_texto_pdf(file_path, metadata, status_callback, task_id), timeout=600
                     )
                 else:
                     texto_extraido = await asyncio.wait_for(
-                        self._extrair_texto_imagem(file_path, task_id), timeout=3600
+                        self._extrair_texto_imagem(file_path, status_callback, task_id), timeout=600
                     )
             except asyncio.TimeoutError:
                 logger.warning("Timeout na extracao de texto para {}", file_path.name)
                 texto_extraido = ""
+
+        if texto_extraido and "ocr_revision" in steps:
+            if task_id:
+                state_manager.verificar_cancelamento(task_id)
+            if status_callback:
+                await status_callback("✏️ Corrigindo erros de OCR...")
+            try:
+                revisado = await asyncio.wait_for(
+                    self.revisor.executar(texto_extraido), timeout=300
+                )
+                if revisado and len(revisado) > len(texto_extraido) * 0.5:
+                    logger.info("OCR revisado: {} -> {} chars", len(texto_extraido), len(revisado))
+                    texto_extraido = revisado
+            except Exception as e:
+                logger.warning("Falha na revisao OCR: {}", e)
 
         if not descricao_visual.strip() and not texto_extraido.strip():
             return ""
@@ -200,11 +218,22 @@ class PipelineExecutor:
         img_b64 = base64.b64encode(img_bytes).decode("utf-8")
         return await self.descritor.executar(img_b64, is_image=True)
 
-    async def _extrair_texto_pdf(self, file_path: Path, status_callback=None, task_id=None) -> str:
+    async def _extrair_texto_pdf(self, file_path: Path, metadata: dict, status_callback=None, task_id=None) -> str:
         import fitz
 
         doc = fitz.open(file_path)
         try:
+            if metadata.get("texto_embutido"):
+                texts = []
+                for i in range(min(len(doc), settings.max_pages)):
+                    page = doc[i]
+                    text = page.get_text().strip()
+                    if text:
+                        texts.append(f"--- Pagina {i + 1} ---\n{text}")
+                if texts:
+                    logger.info("Texto extraido diretamente do PDF: {} chars", sum(len(t) for t in texts))
+                    return "\n\n".join(texts)
+
             total = len(doc)
             pages_to_process = min(total, settings.max_pages)
             texts = []
@@ -214,22 +243,21 @@ class PipelineExecutor:
                 page = doc[i]
                 pix = page.get_pixmap(dpi=200)
                 img_bytes = compress_image(pix.tobytes("png"))
-                img_b64 = base64.b64encode(img_bytes).decode("utf-8")
                 if status_callback:
-                    await status_callback(f"📖 Extraindo texto pagina {i+1} de {pages_to_process}...")
-                page_text = await self.descritor.extrair_texto(img_b64)
+                    await status_callback(f"📖 OCR Tesseract pagina {i+1} de {pages_to_process}...")
+                page_text = await self.ocr_agent.extrair_bytes(img_bytes)
                 if page_text:
                     texts.append(f"--- Pagina {i + 1} ---\n{page_text}")
-                logger.info("Extracao de texto pagina {}/{}", i + 1, pages_to_process)
+                logger.info("OCR Tesseract pagina {}/{}", i + 1, pages_to_process)
             return "\n\n".join(texts) if texts else ""
         finally:
             doc.close()
 
-    async def _extrair_texto_imagem(self, file_path: Path, task_id=None) -> str:
+    async def _extrair_texto_imagem(self, file_path: Path, status_callback=None, task_id=None) -> str:
         if task_id:
             state_manager.verificar_cancelamento(task_id)
+        if status_callback:
+            await status_callback("🔍 OCR Tesseract...")
         with open(file_path, "rb") as f:
             img_bytes = f.read()
-        img_bytes = compress_image(img_bytes)
-        img_b64 = base64.b64encode(img_bytes).decode("utf-8")
-        return await self.descritor.extrair_texto(img_b64)
+        return await self.ocr_agent.extrair_bytes(img_bytes)

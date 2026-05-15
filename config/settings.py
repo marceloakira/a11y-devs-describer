@@ -18,6 +18,8 @@ class Settings:
     ollama_timeout: int = int(os.getenv("OLLAMA_TIMEOUT", "3600"))
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
     allowed_extensions: set[str] = field(default_factory=lambda: _default_extensions())
+    ocr_model: str = os.getenv("OCR_MODEL", "qwen2.5:3b")
+    tesseract_cmd: str = os.getenv("TESSERACT_CMD", "tesseract")
 
     @property
     def bot_token_valid(self) -> bool:

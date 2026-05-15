@@ -5,12 +5,12 @@ from bot.agents.policies import aplicar_politicas
 from bot.agents.state_manager import StateManager
 
 
-def test_policies_force_image_description_for_pdf_sem_texto():
+def test_policies_force_text_extraction_for_pdf_sem_texto():
     plan = {"pipeline": "simple", "steps": ["translation"], "detail_level": "baixo"}
     meta = {"tipo": "pdf", "texto_embutido": False, "paginas": 5}
     result = aplicar_politicas(plan, meta)
-    assert "image_description" in result["steps"]
-    assert result["detail_level"] in ("medio", "alto")
+    assert "text_extraction" in result["steps"]
+    assert "ocr_revision" in result["steps"]
 
 
 def test_policies_does_not_add_unnecessary_image_description():

@@ -3,7 +3,7 @@ import time
 from pathlib import Path
 from typing import Callable, Coroutine
 
-from bot.agents import DescritorVisual, TaskCancelledError, Tradutor
+from bot.agents import DescritorVisual, OCRAgent, RevisorOCR, TaskCancelledError, Tradutor
 from bot.agents.pipeline_executor import PipelineExecutor
 from bot.agents.policies import aplicar_politicas
 from bot.agents.pre_analise import PreAnalise
@@ -280,13 +280,15 @@ async def _fallback_extrair_texto(file_path: Path, status_callback=None) -> str:
 
     with open(file_path, "rb") as f:
         img_bytes = f.read()
-    img_bytes = compress_image(img_bytes)
-    img_b64 = base64.b64encode(img_bytes).decode("utf-8")
-    return await descritor.extrair_texto(img_b64)
+    raw = await ocr_agent.extrair_bytes(img_bytes)
+    if raw:
+        revisado = await revisor_ocr.executar(raw)
+        if revisado:
+            return revisado
+    return raw
 
 
 async def _fallback_extrair_texto_pdf(file_path: Path, status_callback=None) -> str:
-    import base64
     import fitz
 
     doc = fitz.open(file_path)
@@ -298,16 +300,22 @@ async def _fallback_extrair_texto_pdf(file_path: Path, status_callback=None) -> 
             page = doc[i]
             pix = page.get_pixmap(dpi=200)
             img_bytes = compress_image(pix.tobytes("png"))
-            img_b64 = base64.b64encode(img_bytes).decode("utf-8")
             if status_callback:
-                await status_callback(f"📖 Extraindo texto pagina {i+1} de {pages_to_process}...")
-            text = await descritor.extrair_texto(img_b64)
+                await status_callback(f"📖 OCR Tesseract pagina {i+1} de {pages_to_process}...")
+            text = await ocr_agent.extrair_bytes(img_bytes)
             if text:
                 textos.append(f"--- Pagina {i + 1} ---\n{text}")
-        return "\n\n".join(textos) if textos else ""
+        raw = "\n\n".join(textos) if textos else ""
+        if raw:
+            revisado = await revisor_ocr.executar(raw)
+            if revisado:
+                return revisado
+        return raw
     finally:
         doc.close()
 
 
 descritor = DescritorVisual()
 tradutor = Tradutor()
+ocr_agent = OCRAgent()
+revisor_ocr = RevisorOCR()

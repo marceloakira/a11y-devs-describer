@@ -110,21 +110,22 @@ async def test_router_ia_fallback_on_invalid_json(mock_ollama):
 
 
 class TestPolicies:
-    def test_force_image_description_for_pdf_without_text(self):
+    def test_force_text_extraction_for_pdf_without_text(self):
         plan = {"pipeline": "simple", "steps": ["translation"], "detail_level": "baixo", "priority": "speed"}
         metadata = {"tipo": "pdf", "texto_embutido": False}
         result = aplicar_politicas(plan, metadata)
-        assert "image_description" in result["steps"]
-        assert result["detail_level"] != "baixo"
+        assert "text_extraction" in result["steps"]
+        assert "ocr_revision" in result["steps"]
 
     def test_always_has_translation(self):
-        plan = {"pipeline": "simple", "steps": ["image_description"], "detail_level": "medio", "priority": "speed"}
+        plan = {"pipeline": "simple", "steps": ["text_extraction"], "detail_level": "medio", "priority": "speed"}
         metadata = {"tipo": "imagem"}
         result = aplicar_politicas(plan, metadata)
         assert "translation" in result["steps"]
+        assert "ocr_revision" in result["steps"]
 
     def test_preserves_valid_plan(self):
-        plan = {"pipeline": "detailed", "steps": ["image_description", "text_extraction", "translation"], "detail_level": "alto", "priority": "quality"}
+        plan = {"pipeline": "detailed", "steps": ["text_extraction", "ocr_revision", "translation"], "detail_level": "alto", "priority": "quality"}
         metadata = {"tipo": "pdf", "texto_embutido": False}
         result = aplicar_politicas(plan, metadata)
         assert result["pipeline"] == "detailed"
