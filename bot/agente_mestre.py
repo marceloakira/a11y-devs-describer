@@ -3,12 +3,12 @@ import time
 from pathlib import Path
 from typing import Callable, Coroutine
 
-from bot.agents import DescritorVisual, Tradutor
+from bot.agents import DescritorVisual, TaskCancelledError, Tradutor
 from bot.agents.pipeline_executor import PipelineExecutor
 from bot.agents.policies import aplicar_politicas
 from bot.agents.pre_analise import PreAnalise
 from bot.agents.router_ia import RouterIA
-from bot.agents.state_manager import state_manager
+from bot.agents.state_manager import TaskCancelledError, state_manager
 from bot.services.cache import get_cached, set_cache
 from bot.services.history_service import finalizar_conversao, registrar_conversao
 from bot.services.queue_service import QueueItem, processing_queue
@@ -44,9 +44,11 @@ async def process(
         if status_callback:
             await status_callback("📄 Analisando estrutura do arquivo...")
         state_manager.atualizar(task_id, etapa="Pre-analise", progresso=0.1)
+        state_manager.verificar_cancelamento(task_id)
         pre = PreAnalise(file_path)
         metadata = await pre.analisar()
 
+        state_manager.verificar_cancelamento(task_id)
         if status_callback:
             await status_callback("🧠 Planejando roteamento inteligente...")
         state_manager.atualizar(task_id, etapa="Roteamento IA", progresso=0.3)
@@ -63,19 +65,24 @@ async def process(
             if "summarize" not in plan.get("steps", []):
                 plan.setdefault("steps", []).append("summarize")
 
+        state_manager.verificar_cancelamento(task_id)
         state_manager.atualizar(
             task_id,
             etapa=f"Executando pipeline: {plan['pipeline']}",
             progresso=0.5,
         )
-        resultado = await executor.executar(plan, file_path, metadata, status_callback)
+        resultado = await executor.executar(
+            plan, file_path, metadata, status_callback, task_id=task_id
+        )
 
+        state_manager.verificar_cancelamento(task_id)
         if not resultado.strip():
             logger.warning("Pipeline vazio, tentando fallback")
             if status_callback:
                 await status_callback("⚠️ Usando rota alternativa de processamento...")
             resultado = await _fallback_com_llava(file_path, status_callback)
 
+        state_manager.verificar_cancelamento(task_id)
         state_manager.finalizar(task_id, resultado)
         set_cache(file_path, resultado, CACHE_VERSION)
 
@@ -90,6 +97,16 @@ async def process(
         if status_callback:
             await status_callback("✅ Processamento finalizado com sucesso!")
         return resultado
+
+    except TaskCancelledError:
+        logger.info("Tarefa {} cancelada pelo usuario", task_id)
+        finalizar_conversao(
+            task_id=task_id,
+            status="cancelled",
+            erro="Cancelado pelo usuario",
+            tempo_segundos=time.time() - inicio,
+        )
+        raise
 
     except Exception as e:
         logger.error("Erro no pipeline: {}: {}", type(e).__name__, e)
@@ -123,6 +140,7 @@ async def process_with_queue(
     chat_id: int = 0,
     mode: str = "normal",
 ) -> str:
+    from bot.agents.state_manager import state_manager
     task_id = state_manager.criar_tarefa(file_path)
     item = QueueItem(
         user_id=user_id,
@@ -137,21 +155,27 @@ async def process_with_queue(
         processing_queue._queue.append(item)
 
     while True:
+        if state_manager.foi_cancelada(task_id):
+            await processing_queue.cancelar(task_id)
+            raise TaskCancelledError(f"Tarefa {task_id} cancelada na fila")
         async with processing_queue._lock:
             if task_id in processing_queue._processing:
                 break
-            if (
+            can_process = (
                 processing_queue.em_processamento() < processing_queue._max_concurrent
                 and processing_queue._queue
                 and processing_queue._queue[0].task_id == task_id
-            ):
+            )
+            if can_process:
                 processing_queue._processing[task_id] = processing_queue._queue.popleft()
                 break
         await asyncio.sleep(1)
 
-    result = await process(file_path, status_callback, mode)
-    await processing_queue.marcar_concluido(task_id)
-    return result
+    try:
+        result = await process(file_path, status_callback, mode)
+        return result
+    finally:
+        await processing_queue.marcar_concluido(task_id)
 
 
 def _fallback_texto_simples(file_path: Path) -> str:

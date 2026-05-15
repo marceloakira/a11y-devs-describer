@@ -1,3 +1,4 @@
+import asyncio
 import time
 import uuid
 from pathlib import Path
@@ -6,6 +7,7 @@ from pathlib import Path
 class StateManager:
     def __init__(self):
         self._tasks: dict[str, dict] = {}
+        self._cancel_events: dict[str, asyncio.Event] = {}
 
     def criar_tarefa(self, file_path: Path) -> str:
         task_id = str(uuid.uuid4())[:8]
@@ -20,6 +22,7 @@ class StateManager:
             "inicio": time.time(),
             "fim": None,
         }
+        self._cancel_events[task_id] = asyncio.Event()
         return task_id
 
     def atualizar(
@@ -33,6 +36,8 @@ class StateManager:
     ) -> None:
         task = self._tasks.get(task_id)
         if not task:
+            return
+        if task.get("status") == "cancelled":
             return
         if progresso is not None:
             task["progresso"] = progresso
@@ -51,13 +56,19 @@ class StateManager:
         return self._tasks.get(task_id)
 
     def finalizar(self, task_id: str, resultado: str) -> None:
+        task = self._tasks.get(task_id)
+        if not task or task.get("status") == "cancelled":
+            return
         self.atualizar(task_id, progresso=1.0, status="done", resultado=resultado)
 
     def errar(self, task_id: str, erro: str) -> None:
+        task = self._tasks.get(task_id)
+        if not task or task.get("status") == "cancelled":
+            return
         self.atualizar(task_id, status="error", erro=erro)
 
     def listar_tarefas(self) -> list[dict]:
-        return [t for t in self._tasks.values()]
+        return list(self._tasks.values())
 
     def listar_tarefas_processing(self) -> list[dict]:
         return [t for t in self._tasks.values() if t.get("status") == "processing"]
@@ -67,7 +78,22 @@ class StateManager:
         if task and task.get("status") == "processing":
             task["status"] = "cancelled"
             task["etapa_atual"] = "Cancelado pelo usuario"
-            task["fim"] = __import__("time").time()
+            task["fim"] = time.time()
+            event = self._cancel_events.get(task_id)
+            if event:
+                event.set()
+
+    def foi_cancelada(self, task_id: str) -> bool:
+        event = self._cancel_events.get(task_id)
+        return event is not None and event.is_set()
+
+    def verificar_cancelamento(self, task_id: str) -> None:
+        if self.foi_cancelada(task_id):
+            raise TaskCancelledError(f"Tarefa {task_id} cancelada pelo usuario")
+
+
+class TaskCancelledError(Exception):
+    pass
 
 
 state_manager = StateManager()

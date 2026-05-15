@@ -6,6 +6,7 @@ from typing import Callable, Coroutine
 from bot.agents.descritor_visual import DescritorVisual
 from bot.agents.summarizer import Summarizer
 from bot.agents.tradutor import Tradutor
+from bot.agents.state_manager import state_manager
 from bot.utils.image_utils import compress_image
 from bot.utils.logger import logger
 from config.settings import settings
@@ -23,6 +24,7 @@ class PipelineExecutor:
         file_path: Path,
         metadata: dict,
         status_callback: Callable[[str], Coroutine] | None = None,
+        task_id: str | None = None,
     ) -> str:
         steps = plan.get("steps", [])
         detail = plan.get("detail_level", "medio")
@@ -34,7 +36,7 @@ class PipelineExecutor:
             detail,
         )
 
-        result = await self._executar_steps(steps, file_path, metadata, detail, status_callback)
+        result = await self._executar_steps(steps, file_path, metadata, detail, status_callback, task_id)
         return result
 
     async def _executar_steps(
@@ -44,6 +46,7 @@ class PipelineExecutor:
         metadata: dict,
         detail: str,
         status_callback: Callable[[str], Coroutine] | None = None,
+        task_id: str | None = None,
     ) -> str:
         ext = file_path.suffix.lower()
         is_pdf = ext == ".pdf"
@@ -62,32 +65,36 @@ class PipelineExecutor:
         texto_extraido = ""
 
         if "image_description" in steps:
+            if task_id:
+                state_manager.verificar_cancelamento(task_id)
             if status_callback:
                 await status_callback("👁️ Descrevendo elementos visuais...")
             try:
                 if is_pdf:
                     descricao_visual = await asyncio.wait_for(
-                        self._descrever_pdf(file_path, status_callback), timeout=3600
+                        self._descrever_pdf(file_path, status_callback, task_id), timeout=3600
                     )
                 else:
                     descricao_visual = await asyncio.wait_for(
-                        self._descrever_imagem(file_path), timeout=3600
+                        self._descrever_imagem(file_path, task_id), timeout=3600
                     )
             except asyncio.TimeoutError:
                 logger.warning("Timeout na descricao visual para {}", file_path.name)
                 descricao_visual = ""
 
         if "text_extraction" in steps:
+            if task_id:
+                state_manager.verificar_cancelamento(task_id)
             if status_callback:
                 await status_callback("📖 Extraindo texto...")
             try:
                 if is_pdf:
                     texto_extraido = await asyncio.wait_for(
-                        self._extrair_texto_pdf(file_path, status_callback), timeout=3600
+                        self._extrair_texto_pdf(file_path, status_callback, task_id), timeout=3600
                     )
                 else:
                     texto_extraido = await asyncio.wait_for(
-                        self._extrair_texto_imagem(file_path), timeout=3600
+                        self._extrair_texto_imagem(file_path, task_id), timeout=3600
                     )
             except asyncio.TimeoutError:
                 logger.warning("Timeout na extracao de texto para {}", file_path.name)
@@ -96,9 +103,14 @@ class PipelineExecutor:
         if not descricao_visual.strip() and not texto_extraido.strip():
             return ""
 
+        if task_id:
+            state_manager.verificar_cancelamento(task_id)
+
         combined = self._combinar_resultados(descricao_visual, texto_extraido, metadata, steps)
 
         if "summarize" in steps:
+            if task_id:
+                state_manager.verificar_cancelamento(task_id)
             if status_callback:
                 await status_callback("📝 Sumarizando...")
             try:
@@ -109,6 +121,8 @@ class PipelineExecutor:
                 logger.warning("Falha na sumarizacao para {}", file_path.name)
 
         if "translation" in steps:
+            if task_id:
+                state_manager.verificar_cancelamento(task_id)
             if status_callback:
                 await status_callback("🌐 Traduzindo para portugues...")
             combined = await self.tradutor.executar(combined)
@@ -152,7 +166,7 @@ class PipelineExecutor:
             return f"## Tabelas Extraídas\n\n{formatted}"
         return ""
 
-    async def _descrever_pdf(self, file_path: Path, status_callback=None) -> str:
+    async def _descrever_pdf(self, file_path: Path, status_callback=None, task_id=None) -> str:
         import fitz
 
         doc = fitz.open(file_path)
@@ -161,6 +175,8 @@ class PipelineExecutor:
             pages_to_process = min(total, settings.max_pages)
             texts = []
             for i in range(pages_to_process):
+                if task_id:
+                    state_manager.verificar_cancelamento(task_id)
                 page = doc[i]
                 pix = page.get_pixmap(dpi=150)
                 img_bytes = compress_image(pix.tobytes("png"))
@@ -175,14 +191,16 @@ class PipelineExecutor:
         finally:
             doc.close()
 
-    async def _descrever_imagem(self, file_path: Path) -> str:
+    async def _descrever_imagem(self, file_path: Path, task_id=None) -> str:
+        if task_id:
+            state_manager.verificar_cancelamento(task_id)
         with open(file_path, "rb") as f:
             img_bytes = f.read()
         img_bytes = compress_image(img_bytes)
         img_b64 = base64.b64encode(img_bytes).decode("utf-8")
         return await self.descritor.executar(img_b64, is_image=True)
 
-    async def _extrair_texto_pdf(self, file_path: Path, status_callback=None) -> str:
+    async def _extrair_texto_pdf(self, file_path: Path, status_callback=None, task_id=None) -> str:
         import fitz
 
         doc = fitz.open(file_path)
@@ -191,6 +209,8 @@ class PipelineExecutor:
             pages_to_process = min(total, settings.max_pages)
             texts = []
             for i in range(pages_to_process):
+                if task_id:
+                    state_manager.verificar_cancelamento(task_id)
                 page = doc[i]
                 pix = page.get_pixmap(dpi=200)
                 img_bytes = compress_image(pix.tobytes("png"))
@@ -205,7 +225,9 @@ class PipelineExecutor:
         finally:
             doc.close()
 
-    async def _extrair_texto_imagem(self, file_path: Path) -> str:
+    async def _extrair_texto_imagem(self, file_path: Path, task_id=None) -> str:
+        if task_id:
+            state_manager.verificar_cancelamento(task_id)
         with open(file_path, "rb") as f:
             img_bytes = f.read()
         img_bytes = compress_image(img_bytes)

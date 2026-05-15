@@ -80,14 +80,15 @@ async def cmd_detailed(message: Message) -> None:
 @router.message(Command("status"))
 async def cmd_status(message: Message) -> None:
     from bot.agents.state_manager import state_manager
-    tasks = state_manager.listar_tarefas()
+    all_tasks = state_manager.listar_tarefas()
+    tasks = [t for t in all_tasks if t.get("status") in ("processing",)]
     if not tasks:
         await message.answer("Nenhuma tarefa em processamento no momento.")
         return
-    lines = ["📊 **Status das tarefas:**"]
+    lines = ["📊 **Tarefas em andamento:**"]
     for t in tasks[:5]:
         pct = t.get("progresso", 0) * 100
-        status_icon = {"processing": "⏳", "done": "✅", "error": "❌"}.get(t.get("status", ""), "❓")
+        status_icon = {"processing": "⏳", "done": "✅", "error": "❌", "cancelled": "🚫"}.get(t.get("status", ""), "❓")
         lines.append(
             f"{status_icon} `{t['task_id']}` - {t.get('arquivo', '?')} "
             f"- {pct:.0f}% - {t.get('etapa_atual', '')}"

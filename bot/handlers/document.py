@@ -6,6 +6,7 @@ from aiogram.types import FSInputFile, Message, Document, PhotoSize
 
 from bot.services.file_service import download_file
 from bot.agente_mestre import process
+from bot.agents.state_manager import TaskCancelledError
 from bot.utils.logger import logger
 from bot.utils.validators import validate_file
 from bot.exporters.txt_exporter import export_txt
@@ -96,6 +97,8 @@ async def process_file(
 
             await status.edit_text("✅ Conversao concluida! Arquivos gerados em TXT, DOCX e PDF.")
 
+        except TaskCancelledError:
+            await status.edit_text("🚫 Processamento cancelado.")
         except Exception:
             logger.exception("Erro ao processar arquivo")
             await status.edit_text(
