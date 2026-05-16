@@ -1,4 +1,5 @@
 import asyncio
+import time
 from pathlib import Path
 from typing import Callable, Coroutine
 
@@ -103,20 +104,10 @@ class PipelineExecutor:
                 logger.warning("Timeout na extracao de texto para {}", file_path.name)
                 texto_extraido = ""
 
-        if texto_extraido and "ocr_revision" in steps:
-            if task_id:
-                state_manager.verificar_cancelamento(task_id)
-            if status_callback:
-                await status_callback("✏️ Corrigindo erros de OCR...")
-            try:
-                revisado = await asyncio.wait_for(
-                    self.revisor.executar(texto_extraido), timeout=300
-                )
-                if revisado and len(revisado) > len(texto_extraido) * 0.5:
-                    logger.info("OCR revisado: {} -> {} chars", len(texto_extraido), len(revisado))
-                    texto_extraido = revisado
-            except Exception as e:
-                logger.warning("Falha na revisao OCR: {}", e)
+        if texto_extraido and "ocr_revision" in steps and task_id:
+            revisado = await self._revisar_por_pagina(task_id, status_callback)
+            if revisado:
+                texto_extraido = revisado
 
         if not descricao_visual.strip() and not texto_extraido.strip():
             return ""
@@ -126,24 +117,28 @@ class PipelineExecutor:
 
         combined = self._combinar_resultados(descricao_visual, texto_extraido, metadata, steps)
 
+        summary = ""
         if "summarize" in steps:
-            if task_id:
-                state_manager.verificar_cancelamento(task_id)
             if status_callback:
                 await status_callback("📝 Sumarizando...")
             try:
-                summary = await self.summarizer.executar(combined)
-                if summary:
-                    combined = f"## Sumario\n\n{summary}\n\n---\n\n{combined}"
+                summary = await self.summarizer.executar(combined) or ""
             except Exception:
                 logger.warning("Falha na sumarizacao para {}", file_path.name)
 
-        if "translation" in steps:
-            if task_id:
-                state_manager.verificar_cancelamento(task_id)
-            if status_callback:
-                await status_callback("🌐 Traduzindo para portugues...")
+        if "translation" in steps and task_id and "ocr_revision" not in steps:
+            translated = await asyncio.wait_for(
+                self._traduzir_por_pagina(task_id, status_callback), timeout=600
+            )
+            if translated:
+                texto_extraido = translated
+                combined = self._combinar_resultados(descricao_visual, texto_extraido, metadata, steps)
+
+        if "translation" in steps and not task_id:
             combined = await self.tradutor.executar(combined)
+
+        if summary:
+            combined = f"## Sumario\n\n{summary}\n\n---\n\n{combined}"
 
         return combined
 
@@ -192,6 +187,7 @@ class PipelineExecutor:
             total = len(doc)
             pages_to_process = min(total, settings.max_pages)
             texts = []
+            desc_start = time.monotonic()
             for i in range(pages_to_process):
                 if task_id:
                     state_manager.verificar_cancelamento(task_id)
@@ -200,7 +196,14 @@ class PipelineExecutor:
                 img_bytes = compress_image(pix.tobytes("png"))
                 img_b64 = base64.b64encode(img_bytes).decode("utf-8")
                 if status_callback:
-                    await status_callback(f"👁️ Descrevendo pagina {i+1} de {pages_to_process}...")
+                    eta = ""
+                    if i > 0:
+                        elapsed = time.monotonic() - desc_start
+                        avg = elapsed / (i + 1)
+                        remaining = avg * (total - i - 1)
+                        if remaining > 3:
+                            eta = f" (ETA: ~{remaining:.0f}s)"
+                    await status_callback(f"👁️ Descrevendo pagina {i+1} de {pages_to_process}...{eta}")
                 page_text = await self.descritor.executar(img_b64, is_image=True)
                 if page_text:
                     texts.append(f"--- Pagina {i + 1} ---\n{page_text}")
@@ -230,6 +233,9 @@ class PipelineExecutor:
                     text = page.get_text().strip()
                     if text:
                         texts.append(f"--- Pagina {i + 1} ---\n{text}")
+                        if task_id:
+                            from bot.services.history_service import salvar_ocr_raw
+                            salvar_ocr_raw(task_id, i + 1, text)
                 if texts:
                     logger.info("Texto extraido diretamente do PDF: {} chars", sum(len(t) for t in texts))
                     return "\n\n".join(texts)
@@ -237,17 +243,28 @@ class PipelineExecutor:
             total = len(doc)
             pages_to_process = min(total, settings.max_pages)
             texts = []
+            ocr_start = time.monotonic()
             for i in range(pages_to_process):
                 if task_id:
                     state_manager.verificar_cancelamento(task_id)
                 page = doc[i]
-                pix = page.get_pixmap(dpi=200)
+                pix = page.get_pixmap(dpi=300)
                 img_bytes = compress_image(pix.tobytes("png"))
                 if status_callback:
-                    await status_callback(f"📖 OCR Tesseract pagina {i+1} de {pages_to_process}...")
+                    eta = ""
+                    if i > 0:
+                        elapsed = time.monotonic() - ocr_start
+                        avg = elapsed / (i + 1)
+                        remaining = avg * (total - i - 1)
+                        if remaining > 3:
+                            eta = f" (ETA: ~{remaining:.0f}s)"
+                    await status_callback(f"📖 OCR pagina {i+1} de {pages_to_process}...{eta}")
                 page_text = await self.ocr_agent.extrair_bytes(img_bytes)
                 if page_text:
                     texts.append(f"--- Pagina {i + 1} ---\n{page_text}")
+                    if task_id:
+                        from bot.services.history_service import salvar_ocr_raw
+                        salvar_ocr_raw(task_id, i + 1, page_text)
                 logger.info("OCR Tesseract pagina {}/{}", i + 1, pages_to_process)
             return "\n\n".join(texts) if texts else ""
         finally:
@@ -260,4 +277,89 @@ class PipelineExecutor:
             await status_callback("🔍 OCR Tesseract...")
         with open(file_path, "rb") as f:
             img_bytes = f.read()
-        return await self.ocr_agent.extrair_bytes(img_bytes)
+        text = await self.ocr_agent.extrair_bytes(img_bytes)
+        if text and task_id:
+            from bot.services.history_service import salvar_ocr_raw
+            salvar_ocr_raw(task_id, 1, text)
+        return text
+
+    async def _revisar_por_pagina(self, task_id: str, status_callback=None) -> str:
+        from bot.services.history_service import listar_ocr_raw, salvar_ocr_revised
+
+        raw_pages = listar_ocr_raw(task_id)
+        if not raw_pages:
+            return ""
+
+        revised_texts = []
+        total = len(raw_pages)
+        rev_start = time.monotonic()
+        for idx, page in enumerate(raw_pages):
+            state_manager.verificar_cancelamento(task_id)
+            page_num = page["page_number"]
+
+            if status_callback:
+                eta = ""
+                if idx > 0:
+                    elapsed = time.monotonic() - rev_start
+                    avg = elapsed / (idx + 1)
+                    remaining = avg * (total - idx - 1)
+                    if remaining > 3:
+                        eta = f" (ETA: ~{remaining:.0f}s)"
+                await status_callback(f"✏️ Corrigindo OCR pagina {page_num} de {total}...{eta}")
+
+            try:
+                revisado = await self.revisor.executar(page["text"])
+                if not revisado or len(revisado) <= len(page["text"]) * 0.5:
+                    revisado = page["text"]
+            except Exception as e:
+                logger.warning("Falha revisao pg {}: {}: {}", page_num, type(e).__name__, e)
+                revisado = page["text"]
+
+            salvar_ocr_revised(task_id, page_num, revisado)
+            revised_texts.append(f"--- Pagina {page_num} ---\n{revisado}")
+
+            progress = 0.5 + ((idx + 1) / total) * 0.3
+            state_manager.atualizar(task_id, progresso=progress, etapa=f"Revisao OCR pagina {page_num}")
+            logger.info("OCR revisado pagina {}/{}", page_num, total)
+
+        return "\n\n".join(revised_texts) if revised_texts else ""
+
+    async def _traduzir_por_pagina(self, task_id: str, status_callback=None) -> str:
+        from bot.services.history_service import listar_ocr_revised, listar_ocr_raw, salvar_ocr_translated
+
+        rev_pages = {p["page_number"]: p["text"] for p in listar_ocr_revised(task_id)}
+        raw_pages = listar_ocr_raw(task_id)
+        if not raw_pages:
+            return ""
+
+        pages = []
+        for p in raw_pages:
+            texto = rev_pages.get(p["page_number"], p["text"])
+            pages.append({"page_number": p["page_number"], "text": texto})
+
+        translated_texts = []
+        total = len(pages)
+        trad_start = time.monotonic()
+        for idx, page in enumerate(pages):
+            state_manager.verificar_cancelamento(task_id)
+            page_num = page["page_number"]
+
+            if status_callback:
+                eta = ""
+                if idx > 0:
+                    elapsed = time.monotonic() - trad_start
+                    avg = elapsed / (idx + 1)
+                    remaining = avg * (total - idx - 1)
+                    if remaining > 3:
+                        eta = f" (ETA: ~{remaining:.0f}s)"
+                await status_callback(f"🌐 Traduzindo pagina {page_num} de {total}...{eta}")
+
+            translated = await self.tradutor.executar(page["text"])
+            salvar_ocr_translated(task_id, page_num, translated)
+            translated_texts.append(f"--- Pagina {page_num} ---\n{translated}")
+
+            progress = 0.8 + ((idx + 1) / total) * 0.15
+            state_manager.atualizar(task_id, progresso=progress, etapa=f"Traducao pagina {page_num}")
+            logger.info("Traducao pagina {}/{}", page_num, total)
+
+        return "\n\n".join(translated_texts) if translated_texts else ""

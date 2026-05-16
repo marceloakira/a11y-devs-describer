@@ -20,6 +20,24 @@ executor = PipelineExecutor()
 CACHE_VERSION = "hibrido-v4"
 
 
+def _limpar_tarefas_orfas():
+    try:
+        from bot.services.history_service import get_connection
+        conn = get_connection()
+        conn.execute(
+            "UPDATE conversoes SET status='error', erro='Stale: process interrupted' "
+            "WHERE status='processing' AND criado_em < datetime('now', '-1 hours')"
+        )
+        conn.commit()
+        conn.close()
+        logger.info("Tarefas orfas limpas")
+    except Exception as e:
+        logger.warning("Falha ao limpar tarefas orfas: {}", e)
+
+
+_limpar_tarefas_orfas()
+
+
 async def process(
     file_path: Path,
     status_callback: Callable[[str], Coroutine] | None = None,
@@ -62,8 +80,11 @@ async def process(
                 plan.setdefault("steps", []).append("translation")
         elif mode == "detalhado":
             plan["detail_level"] = "alto"
-            if "summarize" not in plan.get("steps", []):
-                plan.setdefault("steps", []).append("summarize")
+            steps = plan.setdefault("steps", [])
+            if "image_description" not in steps:
+                steps.insert(0, "image_description")
+            if "summarize" not in steps:
+                steps.append("summarize")
 
         state_manager.verificar_cancelamento(task_id)
         state_manager.atualizar(
@@ -80,7 +101,7 @@ async def process(
             logger.warning("Pipeline vazio, tentando fallback")
             if status_callback:
                 await status_callback("⚠️ Usando rota alternativa de processamento...")
-            resultado = await _fallback_com_llava(file_path, status_callback)
+            resultado = await _fallback_com_llava(file_path, status_callback, task_id=task_id)
 
         state_manager.verificar_cancelamento(task_id)
         state_manager.finalizar(task_id, resultado)
@@ -114,7 +135,7 @@ async def process(
         if status_callback:
             await status_callback("⚠️ Erro no pipeline principal. Tentando rota alternativa...")
         try:
-            fallback = await _fallback_com_llava(file_path, status_callback)
+            fallback = await _fallback_com_llava(file_path, status_callback, task_id=task_id)
         except Exception as e2:
             logger.error("Fallback tambem falhou: {}: {}", type(e2).__name__, e2)
             fallback = _fallback_texto_simples(file_path)
@@ -188,6 +209,7 @@ def _fallback_texto_simples(file_path: Path) -> str:
 async def _fallback_com_llava(
     file_path: Path,
     status_callback: Callable[[str], Coroutine] | None = None,
+    task_id: str | None = None,
 ) -> str:
     ext = file_path.suffix.lower()
     descricao = ""
@@ -211,7 +233,7 @@ async def _fallback_com_llava(
         await status_callback("📖 Extraindo texto...")
     try:
         texto = await asyncio.wait_for(
-            _fallback_extrair_texto(file_path, status_callback), timeout=600
+            _fallback_extrair_texto(file_path, status_callback, task_id=task_id), timeout=600
         )
     except Exception as e:
         logger.error("Erro extracao texto fallback: {}", e)
@@ -272,15 +294,18 @@ async def _fallback_descrever_imagem(file_path: Path) -> str:
     return await descritor.executar(img_b64, is_image=True)
 
 
-async def _fallback_extrair_texto(file_path: Path, status_callback=None) -> str:
+async def _fallback_extrair_texto(file_path: Path, status_callback=None, task_id: str | None = None) -> str:
     import base64
 
     if file_path.suffix.lower() == ".pdf":
-        return await _fallback_extrair_texto_pdf(file_path, status_callback)
+        return await _fallback_extrair_texto_pdf(file_path, status_callback, task_id=task_id)
 
     with open(file_path, "rb") as f:
         img_bytes = f.read()
     raw = await ocr_agent.extrair_bytes(img_bytes)
+    if raw and task_id:
+        from bot.services.history_service import salvar_ocr_raw
+        salvar_ocr_raw(task_id, 1, raw)
     if raw:
         revisado = await revisor_ocr.executar(raw)
         if revisado:
@@ -288,7 +313,7 @@ async def _fallback_extrair_texto(file_path: Path, status_callback=None) -> str:
     return raw
 
 
-async def _fallback_extrair_texto_pdf(file_path: Path, status_callback=None) -> str:
+async def _fallback_extrair_texto_pdf(file_path: Path, status_callback=None, task_id: str | None = None) -> str:
     import fitz
 
     doc = fitz.open(file_path)
@@ -305,6 +330,9 @@ async def _fallback_extrair_texto_pdf(file_path: Path, status_callback=None) -> 
             text = await ocr_agent.extrair_bytes(img_bytes)
             if text:
                 textos.append(f"--- Pagina {i + 1} ---\n{text}")
+                if task_id:
+                    from bot.services.history_service import salvar_ocr_raw
+                    salvar_ocr_raw(task_id, i + 1, text)
         raw = "\n\n".join(textos) if textos else ""
         if raw:
             revisado = await revisor_ocr.executar(raw)

@@ -19,9 +19,6 @@ REGRAS ABSOLUTAS:
 6. Preserve quebras de linha e paragrafos originais
 7. Se nao houver erros, retorne o texto IDENTICO
 8. NAO responda com explicacoes, apenas o texto corrigido
-
-Texto para correcao:
-{text}
 """
 
 
@@ -36,10 +33,10 @@ class RevisorOCR(BaseAgent):
         )
 
     async def executar(self, entrada: str, is_image: bool = False) -> str:
-        prompt = self.prompt.format(text=entrada)
-        logger_prefix = self.__class__.__name__
+        if not entrada.strip():
+            return entrada
         try:
-            result = await super().executar(prompt, is_image=False)
+            result = await super().executar(entrada, is_image=False)
             if result and len(result) > len(entrada) * 0.5:
                 return result
             return entrada

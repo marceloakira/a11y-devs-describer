@@ -1,6 +1,13 @@
 import io
 
-from PIL import Image
+from PIL import Image, ImageOps
+
+
+def preprocess_for_ocr(img: Image.Image) -> Image.Image:
+    img = img.convert("L")
+    img = ImageOps.autocontrast(img, cutoff=5)
+    img = img.point(lambda x: 255 if x > 127 else 0, mode="L")
+    return img
 
 
 def compress_image(img_bytes: bytes, max_size: int = 1024) -> bytes:

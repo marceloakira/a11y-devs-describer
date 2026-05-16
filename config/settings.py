@@ -9,6 +9,7 @@ class Settings:
     max_file_size_mb: int = int(os.getenv("MAX_FILE_SIZE_MB", "50"))
     max_pages: int = int(os.getenv("MAX_PAGES", "50"))
     temp_dir: Path = Path(os.getenv("TEMP_DIR", "temp"))
+    data_dir: Path = Path(os.getenv("DATA_DIR", "data"))
     logs_dir: Path = Path(os.getenv("LOGS_DIR", "logs"))
     ollama_url: str = os.getenv("OLLAMA_URL", "http://localhost:11434")
     vision_model: str = os.getenv("VISION_MODEL", "llava:7b")
@@ -28,6 +29,10 @@ class Settings:
     @property
     def max_file_size_bytes(self) -> int:
         return self.max_file_size_mb * 1024 * 1024
+
+    @property
+    def db_path(self) -> Path:
+        return self.data_dir / "history.db"
 
 
 def _default_extensions() -> set[str]:

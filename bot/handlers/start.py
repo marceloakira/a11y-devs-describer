@@ -59,6 +59,8 @@ async def cmd_formats(message: Message) -> None:
 
 @router.message(Command("ocr"))
 async def cmd_ocr(message: Message) -> None:
+    from bot.handlers.document import user_modes
+    user_modes[message.chat.id] = "ocr"
     text = (
         "📄 Modo OCR ativado!\n\n"
         "Envie um PDF ou imagem e extrairei APENAS o texto, "
@@ -69,6 +71,8 @@ async def cmd_ocr(message: Message) -> None:
 
 @router.message(Command("detalhado"))
 async def cmd_detailed(message: Message) -> None:
+    from bot.handlers.document import user_modes
+    user_modes[message.chat.id] = "detalhado"
     text = (
         "🔍 Modo Detalhado ativado!\n\n"
         "Envie um PDF ou imagem e recebera uma descricao visual "

@@ -18,6 +18,8 @@ router = Router()
 
 OUTPUT_DIR = settings.temp_dir / "output"
 
+user_modes: dict[int, str] = {}
+
 
 @router.message(F.document)
 async def handle_document(message: Message) -> None:
@@ -33,8 +35,9 @@ async def handle_document(message: Message) -> None:
         await message.answer(error_msg)
         return
 
-    status = await message.answer("📄 Arquivo recebido!")
-    await process_file(message, document.file_id, filename, status)
+    mode = user_modes.pop(message.chat.id, "normal")
+    await message.answer("📄 Arquivo recebido!")
+    await process_file(message, document.file_id, filename, mode=mode)
 
 
 @router.message(F.photo)
@@ -43,35 +46,37 @@ async def handle_photo(message: Message) -> None:
     if photo is None:
         return
 
-    status = await message.answer("📷 Foto recebida!")
-    await process_file(message, photo.file_id, "imagem.png", status)
+    mode = user_modes.pop(message.chat.id, "normal")
+    await message.answer("📷 Foto recebida!")
+    await process_file(message, photo.file_id, "imagem.png", mode=mode)
 
 
 async def process_file(
     message: Message,
     file_id: str,
     filename: str,
-    status: Message,
     mode: str = "normal",
 ) -> None:
     with tempfile.TemporaryDirectory(dir=settings.temp_dir) as tmpdir:
         try:
             input_path = Path(tmpdir) / filename
 
-            await status.edit_text("⬇️ Baixando arquivo...")
-            await download_file(message.bot, file_id, input_path)
+            chat_id = message.chat.id
+            bot = message.bot
 
-            async def atualizar_status(msg: str) -> None:
+            async def send(msg: str) -> None:
                 try:
-                    await status.edit_text(msg)
+                    await bot.send_message(chat_id, msg)
                 except Exception:
                     pass
 
-            extracted_text = await process(input_path, status_callback=atualizar_status, mode=mode)
+            await send("⬇️ Baixando arquivo...")
+            await download_file(message.bot, file_id, input_path)
 
-            await status.edit_text("✅ Conteudo extraido com sucesso! Preparando exportacao...")
+            extracted_text = await process(input_path, status_callback=send, mode=mode)
 
-            await status.edit_text("📝 Gerando versao acessivel...")
+            await send("✅ Conteudo extraido com sucesso! Preparando exportacao...")
+            await send("📝 Gerando versao acessivel...")
 
             OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -84,7 +89,7 @@ async def process_file(
             export_docx(extracted_text, docx_path, filename)
             export_pdf(extracted_text, pdf_path, filename)
 
-            await status.edit_text("📤 Enviando arquivos...")
+            await send("📤 Enviando arquivos...")
 
             caption = "Versao acessivel gerada."
 
@@ -95,12 +100,12 @@ async def process_file(
                         caption=caption,
                     )
 
-            await status.edit_text("✅ Conversao concluida! Arquivos gerados em TXT, DOCX e PDF.")
+            await send("✅ Conversao concluida! Arquivos gerados em TXT, DOCX e PDF.")
 
         except TaskCancelledError:
-            await status.edit_text("🚫 Processamento cancelado.")
+            await send("🚫 Processamento cancelado.")
         except Exception:
             logger.exception("Erro ao processar arquivo")
-            await status.edit_text(
+            await send(
                 "❌ Erro ao processar o arquivo. Tente novamente mais tarde."
             )

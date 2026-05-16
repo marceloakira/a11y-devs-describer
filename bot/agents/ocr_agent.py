@@ -2,6 +2,7 @@ import asyncio
 from pathlib import Path
 
 import pytesseract
+from bot.utils.image_utils import preprocess_for_ocr
 from bot.utils.logger import logger
 from config.settings import settings
 
@@ -9,7 +10,7 @@ pytesseract.pytesseract.tesseract_cmd = settings.tesseract_cmd
 
 
 class OCRAgent:
-    def __init__(self, lang: str = "por"):
+    def __init__(self, lang: str = "por+eng"):
         self.lang = lang
 
     async def executar(self, file_path: Path, dpi: int = 300) -> str:
@@ -31,6 +32,7 @@ class OCRAgent:
 
             def _sync_ocr():
                 img = Image.open(io.BytesIO(img_bytes))
+                img = preprocess_for_ocr(img)
                 return pytesseract.image_to_string(img, lang=self.lang).strip()
 
             text = await loop.run_in_executor(None, _sync_ocr)
@@ -48,6 +50,7 @@ class OCRAgent:
 
         def _sync_ocr():
             with Image.open(file_path) as img:
+                img = preprocess_for_ocr(img)
                 return pytesseract.image_to_string(img, lang=self.lang).strip()
 
         text = await loop.run_in_executor(None, _sync_ocr)
@@ -69,7 +72,7 @@ class OCRAgent:
             for i in range(pages_to_process):
                 page = doc[i]
                 pix = page.get_pixmap(dpi=dpi)
-                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                img = preprocess_for_ocr(Image.frombytes("RGB", [pix.width, pix.height], pix.samples))
 
                 def _ocr_page(img_copy=img):
                     return pytesseract.image_to_string(img_copy, lang=self.lang).strip()
