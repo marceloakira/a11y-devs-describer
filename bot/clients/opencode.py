@@ -1,3 +1,5 @@
+import asyncio
+import base64
 import tempfile
 from pathlib import Path
 
@@ -39,6 +41,10 @@ class OpenCodeClient:
         self._session_id = await self._create_session()
         return self._session_id
 
+    def _image_to_data_uri(self, img_bytes: bytes) -> str:
+        b64 = base64.b64encode(img_bytes).decode("ascii")
+        return f"data:image/jpeg;base64,{b64}"
+
     def _save_image_to_temp(self, img_bytes: bytes) -> Path:
         tmp = Path(tempfile.gettempdir())
         f = tmp / f"opencode_img_{len(self._temp_files):04d}.jpg"
@@ -52,6 +58,48 @@ class OpenCodeClient:
                 f.unlink()
         self._temp_files.clear()
 
+    async def _post_with_retry(
+        self,
+        url: str,
+        json: dict,
+        max_retries: int = 3,
+        base_delay: float = 2.0,
+    ) -> dict:
+        last_error = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    resp = await client.post(url, json=json)
+                    if resp.status_code >= 400:
+                        logger.error("OpenCode error response ({}): {}", resp.status_code, resp.text[:500])
+                    resp.raise_for_status()
+                    return resp.json()
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 404:
+                    logger.warning("Session expired (404), recreating session and retrying...")
+                    self._session_id = None
+                    new_session = await self._get_session()
+                    url = f"{self.base_url}/session/{new_session}/message"
+                    continue
+                elif e.response.status_code == 500 and attempt < max_retries:
+                    delay = base_delay * (2 ** (attempt - 1))
+                    logger.warning("OpenCode 500 error, retrying in {}s (attempt {}/{})", delay, attempt, max_retries)
+                    await asyncio.sleep(delay)
+                    continue
+                else:
+                    raise
+            except (httpx.ReadError, httpx.ConnectError) as e:
+                last_error = e
+                if attempt < max_retries:
+                    delay = base_delay * (2 ** (attempt - 1))
+                    logger.warning("Connection error ({}), retrying in {}s (attempt {}/{})", type(e).__name__, delay, attempt, max_retries)
+                    await asyncio.sleep(delay)
+                    continue
+                else:
+                    logger.error("Connection failed after {} attempts: {}", max_retries, last_error)
+                    raise
+        raise last_error
+
     async def send_message(
         self,
         text: str,
@@ -61,14 +109,13 @@ class OpenCodeClient:
 
         if images:
             for img_bytes in images:
-                tmp_path = self._save_image_to_temp(img_bytes)
-                file_url = tmp_path.as_uri()
+                data_uri = self._image_to_data_uri(img_bytes)
                 parts.append({
                     "type": "file",
-                    "url": file_url,
+                    "url": data_uri,
                     "mime": "image/jpeg",
                 })
-                logger.debug("Image saved to temp: {}", file_url)
+                logger.debug("Image encoded as data URI ({} bytes -> {} chars)", len(img_bytes), len(data_uri))
 
         parts.append({"type": "text", "text": text})
 
@@ -81,32 +128,8 @@ class OpenCodeClient:
 
         logger.debug("OpenCode payload: parts={}, model={}, image_count={}", len(parts), settings.opencode_model, len(images or []))
 
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.post(
-                    f"{self.base_url}/session/{session_id}/message",
-                    json=payload,
-                )
-                if resp.status_code >= 400:
-                    logger.error("OpenCode error response ({}): {}", resp.status_code, resp.text[:500])
-                resp.raise_for_status()
-                data = resp.json()
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                logger.warning("Session expired, recreating...")
-                self._session_id = None
-                session_id = await self._get_session()
-                async with httpx.AsyncClient(timeout=self.timeout) as client:
-                    resp = await client.post(
-                        f"{self.base_url}/session/{session_id}/message",
-                        json=payload,
-                    )
-                    if resp.status_code >= 400:
-                        logger.error("OpenCode error response ({}): {}", resp.status_code, resp.text[:500])
-                    resp.raise_for_status()
-                    data = resp.json()
-            else:
-                raise
+        url = f"{self.base_url}/session/{session_id}/message"
+        data = await self._post_with_retry(url, payload)
 
         return self._extract_text(data)
 

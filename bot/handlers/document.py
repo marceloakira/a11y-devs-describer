@@ -120,9 +120,12 @@ async def process_file(
 
             caption = "Versao acessivel gerada."
 
-            for out_path in [txt_path, docx_path, pdf_path]:
+            out_paths = [txt_path, docx_path, pdf_path]
+            for i, out_path in enumerate(out_paths):
                 if out_path.exists():
                     await _send_doc_with_retry(message, out_path, caption)
+                    if i < len(out_paths) - 1:
+                        await asyncio.sleep(1.5)
 
             await send("✅ Conversao concluida! Arquivos gerados em TXT, DOCX e PDF.")
 
