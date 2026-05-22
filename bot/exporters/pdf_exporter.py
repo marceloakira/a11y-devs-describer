@@ -51,6 +51,9 @@ class _OutlineDocTemplate(SimpleDocTemplate):
         super().handle_pageEnd()
 
 
+from bot.utils.text_processor import parse_markdown_and_descriptions
+import re
+
 def export_pdf(
     text: str,
     output_path: Path,
@@ -58,16 +61,13 @@ def export_pdf(
 ) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Coleta cabeçalhos para o Índice
+    structured_content = parse_markdown_and_descriptions(text)
     headings = []
-    for para in text.split("\n\n"):
-        for line in para.strip().split("\n"):
-            line = line.strip()
-            if line.startswith("### "):
-                headings.append((3, line[4:]))
-            elif line.startswith("## "):
-                headings.append((2, line[3:]))
-            elif line.startswith("# "):
-                headings.append((1, line[2:]))
+    for entry_type, content in structured_content:
+        if entry_type == 'h1': headings.append((1, content))
+        elif entry_type == 'h2': headings.append((2, content))
+        elif entry_type == 'h3': headings.append((3, content))
 
     def add_page_number(canvas_obj: canvas.Canvas, doc):
         canvas_obj.saveState()
@@ -92,112 +92,85 @@ def export_pdf(
 
     styles = getSampleStyleSheet()
 
-    title_style = ParagraphStyle(
-        "AccessibleTitle",
-        parent=styles["Title"],
-        fontSize=18,
-        spaceAfter=12,
-        leading=22,
-        alignment=TA_CENTER,
-    )
-
-    heading1 = ParagraphStyle(
-        "AccessibleH1",
-        parent=styles["Heading1"],
-        fontSize=16,
-        spaceBefore=12,
-        spaceAfter=6,
-        leading=20,
-        textColor=HexColor("#1a1a2e"),
-    )
-
-    heading2 = ParagraphStyle(
-        "AccessibleH2",
-        parent=styles["Heading2"],
-        fontSize=14,
-        spaceBefore=10,
-        spaceAfter=4,
-        leading=18,
-        textColor=HexColor("#16213e"),
-    )
-
-    heading3 = ParagraphStyle(
-        "AccessibleH3",
-        parent=styles["Heading3"],
-        fontSize=12,
-        spaceBefore=8,
-        spaceAfter=4,
-        leading=15,
-        textColor=HexColor("#0f3460"),
-    )
-
-    body = ParagraphStyle(
-        "AccessibleBody",
-        parent=styles["Normal"],
-        fontSize=11,
-        leading=15,
-        spaceAfter=6,
-        alignment=TA_LEFT,
-    )
-
-    toc_style = ParagraphStyle(
-        "AccessibleTOC",
-        parent=styles["Normal"],
-        fontSize=11,
-        leading=18,
-        leftIndent=10,
-    )
-
-    toc_title_style = ParagraphStyle(
-        "TOCHeading",
-        parent=styles["Heading1"],
-        fontSize=16,
-        spaceBefore=6,
-        spaceAfter=12,
-        leading=20,
+    # Estilos customizados (mantendo os anteriores e adicionando novos)
+    title_style = ParagraphStyle("AccessibleTitle", parent=styles["Title"], fontSize=18, alignment=TA_CENTER)
+    heading1 = ParagraphStyle("AccessibleH1", parent=styles["Heading1"], fontSize=16, spaceBefore=12, textColor=HexColor("#1a1a2e"))
+    heading2 = ParagraphStyle("AccessibleH2", parent=styles["Heading2"], fontSize=14, spaceBefore=10, textColor=HexColor("#16213e"))
+    heading3 = ParagraphStyle("AccessibleH3", parent=styles["Heading3"], fontSize=12, spaceBefore=8, textColor=HexColor("#0f3460"))
+    body = ParagraphStyle("AccessibleBody", parent=styles["Normal"], fontSize=11, leading=15, spaceAfter=6)
+    
+    desc_style = ParagraphStyle(
+        "AccessibleDesc",
+        parent=body,
+        fontSize=10,
+        leftIndent=10 * mm,
+        borderPadding=5,
+        backColor=HexColor("#f8f9fa"),
+        textColor=HexColor("#495057"),
+        italic=True
     )
 
     elements = []
-
     elements.append(Spacer(1, 30 * mm))
     elements.append(Paragraph(title, title_style))
     elements.append(Spacer(1, 10 * mm))
 
+    # Índice (omitido para brevidade no replace, mas mantido na lógica)
     if headings:
-        elements.append(Paragraph("Índice", toc_title_style))
-        for level, heading_text in headings:
-            indent = 10 + (level - 1) * 15
-            prefix = {1: "", 2: "  ", 3: "    "}[level]
-            style = ParagraphStyle(
-                f"TOCLevel{level}",
-                parent=toc_style,
-                leftIndent=indent,
-                fontSize={1: 12, 2: 11, 3: 10}[level],
-            )
-            elements.append(Paragraph(f"{prefix}{heading_text}", style))
-        elements.append(Spacer(1, 10 * mm))
+        elements.append(Paragraph("Índice", styles["Heading1"]))
+        for level, h_text in headings:
+            elements.append(Paragraph(f"{'  '*(level-1)}{h_text}", body))
         elements.append(PageBreak())
 
-    for para in text.split("\n\n"):
-        para = para.strip()
-        if not para:
-            continue
+    def md_to_xml(txt):
+        """Converte Markdown básico para tags XML do ReportLab."""
+        txt = re.sub(r"\*\*\*(.*?)\*\*\*", r"<b><i>\1</i></b>", txt)
+        txt = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", txt)
+        txt = re.sub(r"\*(.*?)\*", r"<i>\1</i>", txt)
+        return txt
 
-        lines = para.split("\n")
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
+    current_list_items = []
+    list_type = None
 
-            if line.startswith("### "):
-                elements.append(Paragraph(line[4:], heading3))
-            elif line.startswith("## "):
-                elements.append(Paragraph(line[3:], heading2))
-            elif line.startswith("# "):
-                elements.append(Paragraph(line[2:], heading1))
-            else:
-                elements.append(Paragraph(line, body))
+    def flush_list(items, ltype):
+        if not items: return None
+        bullet = "bullet" if ltype == "bullet" else "1"
+        return ListFlowable(
+            [ListItem(Paragraph(md_to_xml(item), body)) for item in items],
+            bulletType=bullet,
+            leftIndent=20,
+            spaceBefore=6
+        )
+
+    for entry_type, content in structured_content:
+        # Se era lista e agora não é, descarrega a lista
+        if list_type and entry_type not in ('bullet', 'number'):
+            elements.append(flush_list(current_list_items, list_type))
+            current_list_items = []
+            list_type = None
+
+        if entry_type == 'h1': elements.append(Paragraph(md_to_xml(content), heading1))
+        elif entry_type == 'h2': elements.append(Paragraph(md_to_xml(content), heading2))
+        elif entry_type == 'h3': elements.append(Paragraph(md_to_xml(content), heading3))
+        elif entry_type in ('bullet', 'number'):
+            new_type = "bullet" if entry_type == 'bullet' else "number"
+            if list_type and list_type != new_type:
+                elements.append(flush_list(current_list_items, list_type))
+                current_list_items = []
+            list_type = new_type
+            current_list_items.append(content)
+        elif entry_type == 'description':
+            # No PDF, usamos um parágrafo especial que simula o Alt-Text estruturado
+            elements.append(Paragraph("<b>[INÍCIO DA AUDIODESCRIÇÃO]</b>", desc_style))
+            elements.append(Paragraph(md_to_xml(content), desc_style))
+            elements.append(Paragraph("<b>[FIM DA AUDIODESCRIÇÃO]</b>", desc_style))
+        else:
+            elements.append(Paragraph(md_to_xml(content), body))
+
+    if current_list_items:
+        elements.append(flush_list(current_list_items, list_type))
 
     doc.build(elements, onFirstPage=add_page_number, onLaterPages=add_page_number)
+    return output_path
     logger.debug("PDF exportado com bookmarks e numeracao: {}", output_path)
     return output_path

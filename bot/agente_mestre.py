@@ -9,6 +9,7 @@ from bot.services.cache import get_cached, set_cache
 from bot.services.history_service import finalizar_conversao, limpar_orfas, registrar_conversao
 from bot.services.queue_service import QueueItem, processing_queue
 from bot.utils.logger import logger
+from bot.utils.text_processor import merge_broken_paragraphs
 
 agente = AgenteUnico()
 CACHE_VERSION = "opencode-v1"
@@ -52,6 +53,9 @@ async def process(
         state_manager.verificar_cancelamento(task_id)
 
         resultado = await agente.executar(file_path, file_path.parent, status_callback, mode=mode)
+        
+        # Novo: Une parágrafos quebrados entre páginas
+        resultado = merge_broken_paragraphs(resultado)
 
         state_manager.verificar_cancelamento(task_id)
         if not resultado.strip():
@@ -87,7 +91,7 @@ async def process(
         state_manager.errar(task_id, str(e))
         fallback = _fallback_texto_simples(file_path)
         state_manager.atualizar(task_id, resultado=fallback)
-        await set_cache(file_path, fallback, CACHE_VERSION)
+        # Removido set_cache aqui para permitir nova tentativa real pelo usuario
 
         await finalizar_conversao(
             task_id=task_id,

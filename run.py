@@ -63,7 +63,8 @@ async def startup():
         logger.critical("BOT_TOKEN nao configurado")
         sys.exit(1)
 
-    await ensure_opencode_running()
+    if settings.ai_client == "opencode":
+        await ensure_opencode_running()
 
     logger.info("Iniciando bot...")
     await start_polling()

@@ -9,6 +9,9 @@ httpx>=0.27.0
 pypdf>=4.0.0
 PyMuPDF>=1.24.0
 pytesseract>=0.3.10
+playwright>=1.40.0
+opencv-python>=4.9.0
+numpy>=1.26.0
 
 # Development
 pytest>=8.0.0

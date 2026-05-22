@@ -187,6 +187,13 @@ async def cmd_health(message: Message) -> None:
     await message.answer("\n".join(checks))
 
 
+@router.message(Command("limpar"))
+async def cmd_limpar(message: Message) -> None:
+    from bot.services.cache import clear_cache
+    count = await clear_cache()
+    await message.answer(f"\U0001f9f9 Cache limpo! {count} arquivo(s) removido(s).")
+
+
 @router.message(Command("cancelar"))
 async def cmd_cancel(message: Message) -> None:
     from bot.agents.state_manager import state_manager

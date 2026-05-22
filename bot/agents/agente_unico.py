@@ -5,8 +5,18 @@ from typing import Callable, Coroutine
 
 from PIL import Image
 
-from bot.clients.opencode import client as opencode_client
+from config.settings import settings
+
+if settings.ai_client == "browser":
+    from bot.clients.browser_client import client as opencode_client
+elif settings.ai_client == "openrouter":
+    from bot.clients.openrouter import client as opencode_client
+else:
+    from bot.clients.opencode import client as opencode_client
+
+from bot.services.cache import get_cached, set_cache
 from bot.utils.image_converter import convert_pdf_to_png
+from bot.utils.image_enhancer import enhance_image_for_ocr
 from bot.utils.logger import logger
 from bot.utils.pdf_splitter import split_pdf
 from config.settings import settings
@@ -112,6 +122,14 @@ class AgenteUnico:
         results = []
         for i, page_path in enumerate(page_pdfs):
             page_num = i + 1
+            
+            # Novo: Sistema de cache por pagina para evitar re-processamento
+            page_cache_key = f"page_{page_num}_{effective_mode}"
+            cached_page = await get_cached(page_path, page_cache_key, ttl=86400) # Cache de 24h para paginas
+            if cached_page:
+                logger.info("[pag {}] Cache hit (pulando IA)", page_num)
+                results.append(cached_page)
+                continue
 
             if status_callback:
                 label = f"📷 Processando pagina {page_num} de {total_pages}..."
@@ -131,17 +149,36 @@ class AgenteUnico:
 
                 logger.debug("[pag {}] comprimindo para JPG...", page_num)
                 jpg_bytes = _compress_to_jpg(png_bytes)
-                logger.debug("[pag {}] JPG comprimido: {} bytes", page_num, len(jpg_bytes))
+                
+                # Novo: Melhoria de imagem (Contraste, Brilho, Rotação)
+                logger.debug("[pag {}] aplicando melhoria de imagem (OpenCV)...", page_num)
+                jpg_bytes = enhance_image_for_ocr(jpg_bytes)
+                
+                logger.debug("[pag {}] JPG final: {} bytes", page_num, len(jpg_bytes))
 
-                logger.info("Enviando pagina {} para OpenCode ({} bytes)", page_num, len(jpg_bytes))
+                logger.info("Enviando pagina {} para OpenRouter ({} bytes)", page_num, len(jpg_bytes))
 
-                page_prompt = system_prompt
+                # Instruções avançadas para Semântica e Acessibilidade
+                advanced_instructions = (
+                    "\n\nREGRAS DE FORMATAÇÃO E SEMÂNTICA:\n"
+                    "1. Se houver imagens, gráficos ou diagramas, forneça a audiodescrição entre colchetes assim: "
+                    "'[DESCRIÇÃO: sua descrição detalhada aqui]'.\n"
+                    "2. Preserve a ênfase do texto original usando Markdown: **negrito** para termos importantes e *itálico* para ênfase ou nomes estrangeiros.\n"
+                    "3. Para MATEMÁTICA: linearize fórmulas simples (ex: 'a/b') e use LaTeX entre '$' para complexas (ex: '$x^2$').\n"
+                    "4. Se um parágrafo termina com hífen ou parece continuar na próxima página, apenas transcreva-o; o sistema cuidará da união."
+                )
+                
+                page_prompt = system_prompt + advanced_instructions
                 if is_pdf:
                     page_prompt += f"\n\nEste e o documento de {total_pages} paginas. Voce esta processando a pagina {page_num} de {total_pages}."
 
                 logger.debug("[pag {}] chamando opencode_client.send_message()", page_num)
                 response = await opencode_client.send_message(text=page_prompt, images=[jpg_bytes])
                 logger.debug("[pag {}] resposta recebida: {} chars", page_num, len(response))
+                
+                # Salva a pagina no cache assim que recebe a resposta
+                await set_cache(page_path, response, page_cache_key)
+                
             except UnicodeDecodeError as e:
                 import traceback
                 tb = traceback.format_exc()

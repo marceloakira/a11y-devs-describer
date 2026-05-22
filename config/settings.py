@@ -20,6 +20,11 @@ class Settings:
     max_page_width: int = int(os.getenv("MAX_PAGE_WIDTH", "1600"))
     jpg_quality: int = int(os.getenv("JPG_QUALITY", "85"))
     pdf_split_dpi: int = int(os.getenv("PDF_SPLIT_DPI", "150"))
+    ai_client: str = os.getenv("AI_CLIENT", "opencode")
+    gemini_url: str = os.getenv("GEMINI_URL", "https://gemini.google.com/app")
+    browser_headless: bool = os.getenv("BROWSER_HEADLESS", "true").lower() == "true"
+    openrouter_api_key: str = os.getenv("OPENROUTER_API_KEY", "")
+    openrouter_model: str = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-nano-12b-v2-vl:free")
 
     @property
     def bot_token_valid(self) -> bool:
