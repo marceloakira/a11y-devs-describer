@@ -1,0 +1,37 @@
+Título Gráfico: Metals : Density  
+
+Eixo do Y (vertical):  
+- Densidade (gram/cm³)  
+- Valores marcados em intervalos: 0.00, 2.50, 5.00, 7.50, 10.00, etc., até 25.00.  
+
+Eixo do X (horizontal):  
+- Lista de metais, ordenados alfabeticamente:  
+  Aluminum, Cadmium, Chromium, Cobalt, Copper, Gold, Iron, Lead, Magnesium, Manganese, Mercury, Molybdenum, Nickel, Platinum, Silver, Tin, Titanium, Tungsten, Uranium, Zinc.  
+
+Barras de Gráfico (Altura e Valores):  
+1. Aluminum: 2.70  
+2. Cadmium: 8.65  
+3. Chromium: 7.19  
+4. Cobalt: 8.90  
+5. Copper: 8.96  
+6. Gold: 19.30  
+7. Iron: 7.87  
+8. Lead: 11.34  
+9. Magnesium: 1.74  
+10. Manganese: 7.21  
+11. Mercury: 13.53  
+12. Molybdenum: 10.28  
+13. Nickel: 8.91  
+14. Platinum: 21.45  
+15. Silver: 10.49  
+16. Tin: 7.37  
+17. Titanium: 4.51  
+18. Tungsten: 19.25  
+19. Uranium: 19.10  
+20. Zinc: 7.14  
+
+Características Visuais:  
+- Fundo: Amarelo claro.  
+- Barras do gráfico: Cinza prateado.  
+- Fonte do texto: Preta ou Escura.  
+- Grade: Linhas horizontais finas, para facilitar a leitura dos valores.
